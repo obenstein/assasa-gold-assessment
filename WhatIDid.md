@@ -49,12 +49,25 @@ Investigating `pakgold.pk`'s network traffic showed it doesn't expose its own PK
 
 Chosen because its native key TTL maps directly onto both the 75-second quote lock and the 5-minute price cache, with no cron jobs or manual expiry bookkeeping needed — and because Vercel's serverless functions have no persistent local disk, ruling out file/SQLite-based state.
 
+## Reviewer Test Controls
+
+A "Reviewer test controls" panel on the home screen (collapsed by default) lets a reviewer trigger two of the four stress cases live on the deployed app, with no code changes or redeploy:
+
+- **Both sources down** — forces `getMarketPrice()` to return `trusted: false` immediately, which disables the trade form and shows the reason, exactly as a real dual-outage would.
+- **Trigger guardrail** — simulates the feed reporting a price 10% below the last trusted rate (enough to make the guardrail floor bind on BUY quotes, while staying under the 15% trust-deviation threshold so it doesn't just get rejected as untrusted).
+
+Both are backed by a `debug:scenario` key in Redis with a 15-minute TTL, so a forgotten toggle self-resets rather than leaving the demo stuck. The other two stress cases (quote expiry, insufficient balances) don't need a toggle — they're reachable through normal use (wait 75s; or trade more than the seeded balances allow).
+
 ## Known Gaps
 
 Being upfront about what's incomplete rather than leaving it to be discovered:
 
-- **No reviewer-facing way to trigger the guardrail or "both sources untrusted" scenarios without redeploying.** The brief explicitly asks for this ("reviewers should be able to try them... without changing your deployed code"), and as of writing this isn't implemented — there's no debug/simulate query param or toggle. This is the most significant gap against the brief as written.
-- **`/api/trade` and `/api/trade/confirm` are duplicate routes** with identical logic; only `/api/trade` is actually called by the frontend. `/api/trade/confirm` is dead code left over from an earlier iteration.
 - **Trade settlement isn't fully atomic.** `confirmTrade` writes the new wallet state, the trade record, and the quote's `CONFIRMED` status as separate sequential Redis calls. A failure partway through (e.g. the wallet write succeeds but the quote-status write fails) could theoretically allow a subsequent confirm to re-execute against stale quote state before the 15s lock is used up. This is a low-probability edge case (requires a mid-sequence Redis failure) rather than a routine one, but it's not proven safe under partial failure.
 - **PakGold's exact PKR/gram calculation (rounding rule, purity handling) was not reproduced.** I use my own conversion and rounding (see Assumptions) rather than pakgold.pk's undocumented client-side formula, since that formula wasn't fully recoverable from the network traffic alone.
-- **`.next` build output was committed to git** in earlier commits (missing from `.gitignore`); should be removed from tracking before final submission.
+- **The guardrail simulation has one narrow cold-start edge case**: if "Trigger guardrail" is used before any real price has ever been fetched (no `price:last-good` in Redis yet), the simulated dip has nothing to floor against and the guardrail won't visibly bind on that first call. In practice the app always fetches a real price on page load before a reviewer can reach the toggle, so this shouldn't surface in normal use.
+
+## Fixed Before Submission
+
+- Rotated the Upstash credential that was briefly committed in `.env.example`, and replaced it with placeholder values.
+- Removed `/api/trade/confirm`, a duplicate of `/api/trade` left over from an earlier iteration — only `/api/trade` was ever called by the frontend.
+- Added `.next`, `.env*.local`, and `.vercel` to `.gitignore` and untracked the previously-committed `.next` build output.

@@ -73,6 +73,14 @@ On the first read of `/api/balances` (or any trade action), the app seeds:
 - **Fallback**: [`data-asg.goldprice.org/dbXRates/PKR`](https://data-asg.goldprice.org/dbXRates/PKR), which returns a PKR-denominated rate directly — no FX conversion dependency, so it stays available even if the FX source is down.
 - See `WhatIDid.md` for why these are labeled honestly as `GoldAPI` / `GoldPriceOrg` rather than "PakGold".
 
+## Trying the stress cases
+
+Open the app and expand **"Reviewer test controls"** on the home screen to simulate:
+- Both price sources being down (trading pauses, reason shown)
+- The guardrail floor binding on BUY quotes
+
+No redeploy needed — these are backed by a Redis flag that auto-resets after 15 minutes. The other two stress cases (quote expiry, insufficient balances) are reachable through normal use.
+
 ## Known limitations
 
 See the **Known Gaps** section of `WhatIDid.md`.

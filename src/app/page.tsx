@@ -252,6 +252,31 @@ useEffect(() => {
     setBalancesLoading(false);
   }, []);
 
+  const [scenario, setScenario] = useState<"none" | "feed_down" | "guardrail">("none");
+  const [scenarioPanelOpen, setScenarioPanelOpen] = useState(false);
+  const [scenarioBusy, setScenarioBusy] = useState(false);
+
+  const applyScenario = useCallback(
+    async (next: "none" | "feed_down" | "guardrail") => {
+      setScenarioBusy(true);
+      try {
+        const res = await fetch("/api/debug/scenario", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ scenario: next }),
+        });
+        if (res.ok) {
+          setScenario(next);
+          await fetchPrice(true);
+        }
+      } catch {
+        // ignore — reviewer can retry
+      }
+      setScenarioBusy(false);
+    },
+    [fetchPrice]
+  );
+
   useEffect(() => {
     fetchPrice();
     fetchBalances();
@@ -604,6 +629,72 @@ useEffect(() => {
                   <path d="M5 12h14M12 5l7 7-7 7" />
                 </svg>
               </button>
+            </div>
+
+            {/* Reviewer test controls — lets a reviewer trigger stress cases
+                (feed down, guardrail floor) without redeploying anything. */}
+            <div style={{ marginTop: 20 }}>
+              <button
+                onClick={() => setScenarioPanelOpen((v) => !v)}
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: "var(--text-muted)",
+                  fontSize: 12,
+                  cursor: "pointer",
+                  padding: "6px 0",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ transform: scenarioPanelOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}>
+                  <path d="M9 6l6 6-6 6" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                Reviewer test controls
+                {scenario !== "none" && (
+                  <span style={{ color: "#F59E0B", fontWeight: 600 }}>
+                    · {scenario === "feed_down" ? "Feed down" : "Guardrail"} active
+                  </span>
+                )}
+              </button>
+
+              {scenarioPanelOpen && (
+                <div
+                  className="glass-card-elevated"
+                  style={{ padding: 16, marginTop: 8, fontSize: 13 }}
+                >
+                  <p style={{ color: "var(--text-muted)", marginBottom: 12, marginTop: 0, lineHeight: 1.5 }}>
+                    Simulate the stress cases below without changing deployed code. Auto-resets after 15 minutes.
+                  </p>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <button
+                      onClick={() => applyScenario("none")}
+                      disabled={scenarioBusy || scenario === "none"}
+                      className={scenario === "none" ? "btn-primary" : "btn-secondary"}
+                      style={{ padding: "8px 14px", fontSize: 12, width: "auto" }}
+                    >
+                      Normal
+                    </button>
+                    <button
+                      onClick={() => applyScenario("feed_down")}
+                      disabled={scenarioBusy || scenario === "feed_down"}
+                      className={scenario === "feed_down" ? "btn-primary" : "btn-secondary"}
+                      style={{ padding: "8px 14px", fontSize: 12, width: "auto" }}
+                    >
+                      Both sources down
+                    </button>
+                    <button
+                      onClick={() => applyScenario("guardrail")}
+                      disabled={scenarioBusy || scenario === "guardrail"}
+                      className={scenario === "guardrail" ? "btn-primary" : "btn-secondary"}
+                      style={{ padding: "8px 14px", fontSize: 12, width: "auto" }}
+                    >
+                      Trigger guardrail
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}

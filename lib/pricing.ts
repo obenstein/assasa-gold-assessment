@@ -198,6 +198,31 @@ export async function validatePriceSnapshot(snapshot: PriceSnapshot): Promise<Pr
   };
 }
 
+export type DebugScenario = "none" | "feed_down" | "guardrail";
+
+/**
+ * Reviewer test mode — lets a reviewer trigger the "both sources untrusted"
+ * and "guardrail" stress cases on the deployed app without redeploying.
+ * Stored in Redis with a 15-minute TTL so a forgotten toggle self-resets.
+ */
+export async function getDebugScenario(): Promise<DebugScenario> {
+  try {
+    const s = await redis.get<string>("debug:scenario");
+    if (s === "feed_down" || s === "guardrail") return s;
+  } catch (err) {
+    console.warn("Failed to read debug:scenario:", err);
+  }
+  return "none";
+}
+
+export async function setDebugScenario(scenario: DebugScenario): Promise<void> {
+  if (scenario === "none") {
+    await redis.del("debug:scenario");
+    return;
+  }
+  await redis.set("debug:scenario", scenario, { ex: 900 });
+}
+
 /**
  * Retrieves market price, managing Redis cache (300s TTL) and failover.
  * - Checks price:cache (TTL 300s). Returns if cached.
@@ -209,14 +234,32 @@ export async function validatePriceSnapshot(snapshot: PriceSnapshot): Promise<Pr
  * - If untrusted: returns snapshot with trusted: false and clear reason string.
  */
 export async function getMarketPrice(): Promise<PriceSnapshot> {
-  try {
-    const cached = await redis.get<PriceSnapshot>("price:cache");
-    if (cached && typeof cached === "object" && cached.pricePerGramPKR > 0) {
-      return cached;
-    }
-  } catch (err) {
-    console.warn("Redis read error for price:cache:", err);
+  const scenario = await getDebugScenario();
+
+  if (scenario === "feed_down") {
+    // Simulated stress case: neither source can be trusted. Bypasses cache
+    // entirely so it takes effect immediately and reverts immediately once cleared.
+    return {
+      source: "GoldPriceOrg",
+      pricePerGramPKR: 0,
+      fetchedAt: new Date().toISOString(),
+      trusted: false,
+      reason: "Simulated: neither price source is reachable (reviewer test mode)",
+    };
   }
+
+  if (scenario === "none") {
+    try {
+      const cached = await redis.get<PriceSnapshot>("price:cache");
+      if (cached && typeof cached === "object" && cached.pricePerGramPKR > 0) {
+        return cached;
+      }
+    } catch (err) {
+      console.warn("Redis read error for price:cache:", err);
+    }
+  }
+  // scenario === "guardrail" intentionally skips the cache above so the
+  // simulated dip takes effect immediately and reverts immediately once cleared.
 
   let usdToPkr: number;
   try {
@@ -258,7 +301,24 @@ export async function getMarketPrice(): Promise<PriceSnapshot> {
 
   const validatedSnapshot = await validatePriceSnapshot(snapshot);
 
-  if (validatedSnapshot.trusted) {
+  if (scenario === "guardrail" && validatedSnapshot.trusted) {
+    // Simulate the feed reporting a price 10% below the last trusted rate.
+    // 10% stays under the 15% trust-deviation threshold (so it doesn't just
+    // trip "untrusted"), while still being low enough that
+    // market × 1.10 < lastGood × 1.10 — which is exactly when the buy-side
+    // guardrail floor takes over. Not cached, so it never pollutes
+    // price:last-good and reverts the instant the scenario is cleared.
+    const base = validatedSnapshot.pricePerGramPKR;
+    return {
+      ...validatedSnapshot,
+      pricePerGramPKR: Math.round(base * 0.9),
+      fetchedAt: new Date().toISOString(),
+      reason:
+        "Simulated: feed reporting 10% below the last trusted rate (reviewer test mode) — guardrail floor is active on BUY quotes",
+    };
+  }
+
+  if (scenario === "none" && validatedSnapshot.trusted) {
     try {
       await redis.set("price:cache", validatedSnapshot, { ex: 300 });
       await redis.set("price:last-good", validatedSnapshot);
